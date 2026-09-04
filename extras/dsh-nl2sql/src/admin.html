@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>配网业务域</title>
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, sans-serif; color: #111; background: #f6f7f9; }
+    body { margin: 0; }
+    header { background: #111827; color: #fff; padding: 14px 20px; }
+    header a { color: #93c5fd; }
+    main { max-width: 960px; margin: 0 auto; padding: 20px; }
+    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    label { display: block; font-size: 12px; color: #6b7280; margin: 8px 0 4px; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    button { border: 0; background: #2563eb; color: #fff; border-radius: 8px; padding: 8px 12px; cursor: pointer; margin: 8px 8px 0 0; }
+    button.secondary { background: #374151; }
+    .msg { margin-top: 8px; font-size: 13px; color: #065f46; white-space: pre-wrap; }
+    .msg.err { color: #b91c1c; }
+    .tables { max-height: 280px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; }
+    .tables label { color: #111; font-size: 13px; }
+    .domain { border-bottom: 1px solid #f3f4f6; padding: 8px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>配网 NL2SQL 配置</div>
+    <div style="font-size:13px;opacity:.8">连接 MySQL → 建业务域 → 勾选表并抽 10 行样例 → 对话框可问
+      · <a href="/">返回对话</a></div>
+  </header>
+  <main>
+    <section>
+      <h2>1. MySQL 数据源</h2>
+      <div class="row">
+        <div><label>Host</label><input id="host" /></div>
+        <div><label>端口</label><input id="port" /></div>
+        <div><label>库名</label><input id="database" /></div>
+      </div>
+      <div class="row">
+        <div><label>用户（建议只读）</label><input id="user" /></div>
+        <div><label>密码</label><input id="password" type="password" placeholder="不改则保持原密码" /></div>
+      </div>
+      <button id="saveConn">保存并测试</button>
+      <div class="msg" id="connMsg"></div>
+    </section>
+    <section>
+      <h2>2. 业务域（文件夹）</h2>
+      <div class="row">
+        <div><label>域名称</label><input id="domainName" placeholder="设备" /></div>
+        <div style="grid-column: span 2"><label>核心业务关键词</label><input id="domainKw" placeholder="馈线,配变,开关,psr_id" /></div>
+      </div>
+      <label>域说明</label>
+      <textarea id="domainDesc" rows="2" placeholder="配网设备台账与拓扑"></textarea>
+      <button id="createDomain">新建业务域</button>
+      <div id="domainList"></div>
+    </section>
+    <section>
+      <h2>3. 从库中勾选表并注册</h2>
+      <label>写入到哪个域</label>
+      <input id="targetDomain" placeholder="设备" />
+      <button class="secondary" id="loadTables">拉取库表</button>
+      <button id="registerSel">确定注册所选表（每表 10 行样例）</button>
+      <div class="tables" id="tableList">点「拉取库表」</div>
+      <div class="msg" id="regMsg"></div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id)
+    const api = (p, opt) => fetch('/nl2sql/api' + p, opt).then(async (r) => {
+      const data = await r.json()
+      if (!r.ok) throw new Error(data.error || r.statusText)
+      return data
+    })
+    function setMsg(id, text, err) {
+      const el = $(id)
+      el.textContent = text
+      el.className = 'msg' + (err ? ' err' : '')
+    }
+    async function refresh() {
+      const cfg = await api('/config')
+      $('host').value = cfg.host || ''
+      $('port').value = cfg.port || 3306
+      $('user').value = cfg.user || ''
+      $('database').value = cfg.database || ''
+      const domains = await api('/domains')
+      $('domainList').innerHTML = (domains.items || []).map((d) =>
+        `<div class="domain"><b>${d.domain}</b> · ${d.tables} 张表<br/><small>${d.keywords || ''} ${d.description || ''}</small></div>`
+      ).join('') || '<div class="domain">还没有域</div>'
+    }
+    $('saveConn').onclick = async () => {
+      try {
+        const body = {
+          host: $('host').value, port: Number($('port').value || 3306),
+          user: $('user').value, password: $('password').value, database: $('database').value,
+        }
+        const out = await api('/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        setMsg('connMsg', out.message || '已保存')
+      } catch (e) { setMsg('connMsg', String(e.message || e), true) }
+    }
+    $('createDomain').onclick = async () => {
+      try {
+        await api('/domains', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ domain: $('domainName').value, description: $('domainDesc').value, keywords: $('domainKw').value }),
+        })
+        $('targetDomain').value = $('domainName').value
+        await refresh()
+      } catch (e) { setMsg('regMsg', String(e.message || e), true) }
+    }
+    $('loadTables').onclick = async () => {
+      try {
+        const out = await api('/tables')
+        $('tableList').innerHTML = out.tables.map((name) =>
+          `<label><input type="checkbox" value="${name}" /> ${name}</label>`
+        ).join('') || '库中没有表'
+      } catch (e) { setMsg('regMsg', String(e.message || e), true) }
+    }
+    $('registerSel').onclick = async () => {
+      const tables = [...document.querySelectorAll('#tableList input:checked')].map((el) => el.value)
+      try {
+        const out = await api('/register', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ domain: $('targetDomain').value, tables, sampleLimit: 10 }),
+        })
+        setMsg('regMsg', out.message || '注册完成')
+        await refresh()
+      } catch (e) { setMsg('regMsg', String(e.message || e), true) }
+    }
+    refresh().catch((e) => setMsg('connMsg', String(e.message || e), true))
+  </script>
+</body>
+</html>
