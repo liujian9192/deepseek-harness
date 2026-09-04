@@ -1,17 +1,18 @@
-# Load with:
+# Load from repo root:
 #   pnpm dsh web --patch ./extras/dsh-nl2sql/cordis.yml
-# If the plugin does not appear, change `name` to an absolute path:
-#   E:/project/deepseek-harness/extras/dsh-nl2sql/src/index.ts
+#
+# `name` MUST be an absolute path. Relative paths are resolved against this
+# yaml file and become extras/dsh-nl2sql/extras/dsh-nl2sql/src/index.ts.
 
 - insert:
     - id: nl2sql-mysql
-      name: ./extras/dsh-nl2sql/src/index.ts
+      name: E:/project/deepseek-harness/extras/dsh-nl2sql/src/index.ts
       config:
         host: 127.0.0.1
         port: 3306
         user: root
         password: ""
         database: your_db
-        schemaDir: ./extras/dsh-nl2sql/schemas
+        schemaDir: E:/project/deepseek-harness/extras/dsh-nl2sql/schemas
         sampleLimit: 5
         queryLimit: 50
