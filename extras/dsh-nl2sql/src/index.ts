@@ -1,8 +1,23 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import mysql from 'mysql2/promise'
+import {
+  formatCell,
+  listMysqlTables,
+  loadAll,
+  loadPacks,
+  pullLive,
+  savePack,
+  saveTable,
+  withMysql,
+  type MysqlConfig,
+  type TableSchema,
+} from './catalog.ts'
 
 export const name = 'nl2sql-mysql'
 export const inject = ['tools']
@@ -16,159 +31,41 @@ export interface Nl2sqlConfig {
   schemaDir?: string
   sampleLimit?: number
   queryLimit?: number
-}
-
-interface LiveColumn {
-  name: string
-  type: string
-  comment: string
-}
-
-interface TableSchema {
-  table: string
-  domain: string
-  description: string
-  source?: 'mysql' | 'mock'
-  columns: Record<string, string>
-  live_columns: LiveColumn[]
-  sample_rows: Record<string, unknown>[]
-  refreshed_at?: string
-}
-
-interface DomainPack {
-  domain: string
-  description: string
-  tables: TableSchema[]
+  adminPort?: number
 }
 
 const FORBIDDEN = /\b(insert|update|delete|drop|alter|truncate|create|replace|grant|revoke|load\s+data|outfile|dumpfile|into\s+outfile)\b/i
-const DOMAIN_FILES = new Set(['设备', '运行', '检修', '抢修', '停电', '未分组'])
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 function resolveDir(dir: string): string {
   return path.isAbsolute(dir) ? dir : path.resolve(process.cwd(), dir)
 }
 
-function domainPath(schemaDir: string, domain: string): string {
-  return path.join(schemaDir, `${domain}.json`)
+function runtimeFile(): string {
+  return path.join(os.homedir(), '.dsh', 'nl2sql-config.json')
 }
 
-function normalizeDomain(raw?: string): string {
-  const name = (raw || '设备').trim()
-  return name || '设备'
-}
-
-async function readPack(file: string): Promise<DomainPack | null> {
+async function readRuntime(): Promise<Partial<MysqlConfig>> {
   try {
-    const raw = JSON.parse(await readFile(file, 'utf8')) as DomainPack | TableSchema
-    if ('tables' in raw && Array.isArray(raw.tables)) {
-      return {
-        domain: raw.domain || path.basename(file, '.json'),
-        description: raw.description || '',
-        tables: raw.tables.map((t) => ({ ...t, domain: raw.domain || t.domain || path.basename(file, '.json') })),
-      }
-    }
-    if ('table' in raw && raw.table) {
-      const table = raw as TableSchema
-      return {
-        domain: table.domain || '未分组',
-        description: '',
-        tables: [{ ...table, domain: table.domain || '未分组' }],
-      }
-    }
-    return null
+    return JSON.parse(await readFile(runtimeFile(), 'utf8')) as Partial<MysqlConfig>
   } catch {
-    return null
+    return {}
   }
 }
 
-async function loadPacks(schemaDir: string): Promise<DomainPack[]> {
-  await mkdir(schemaDir, { recursive: true })
-  const names = await readdir(schemaDir)
-  const packs: DomainPack[] = []
-  for (const file of names) {
-    if (!file.endsWith('.json')) continue
-    const pack = await readPack(path.join(schemaDir, file))
-    if (pack) packs.push(pack)
+async function writeRuntime(cfg: MysqlConfig): Promise<void> {
+  await mkdir(path.dirname(runtimeFile()), { recursive: true })
+  await writeFile(runtimeFile(), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+}
+
+function mergeMysql(base: MysqlConfig, extra: Partial<MysqlConfig>): MysqlConfig {
+  return {
+    host: extra.host || base.host,
+    port: Number(extra.port || base.port),
+    user: extra.user || base.user,
+    password: extra.password === undefined || extra.password === '' ? base.password : extra.password,
+    database: extra.database || base.database,
   }
-  return packs
-}
-
-async function loadAll(schemaDir: string): Promise<TableSchema[]> {
-  const packs = await loadPacks(schemaDir)
-  return packs.flatMap((p) => p.tables.map((t) => {
-    t.columns ??= {}
-    t.live_columns ??= []
-    t.sample_rows ??= []
-    t.description ??= ''
-    t.domain ??= p.domain
-    return t
-  }))
-}
-
-async function saveTable(schemaDir: string, data: TableSchema): Promise<void> {
-  await mkdir(schemaDir, { recursive: true })
-  const file = domainPath(schemaDir, data.domain)
-  const existing = await readPack(file)
-  const pack: DomainPack = existing || {
-    domain: data.domain,
-    description: DOMAIN_FILES.has(data.domain) ? `${data.domain}业务域` : '',
-    tables: [],
-  }
-  const idx = pack.tables.findIndex((t) => t.table.toLowerCase() === data.table.toLowerCase())
-  if (idx >= 0) pack.tables[idx] = data
-  else pack.tables.push(data)
-  pack.domain = data.domain
-  await writeFile(file, `${JSON.stringify(pack, null, 2)}\n`, 'utf8')
-}
-
-function formatCell(value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString()
-  if (Buffer.isBuffer(value)) return value.toString('utf8')
-  if (typeof value === 'bigint') return value.toString()
-  return value
-}
-
-async function withMysql<T>(cfg: Required<Pick<Nl2sqlConfig, 'host' | 'port' | 'user' | 'password' | 'database'>>, fn: (conn: mysql.Connection) => Promise<T>): Promise<T> {
-  if (!cfg.database) throw new Error('cordis.yml 里还没配 database')
-  const conn = await mysql.createConnection({
-    host: cfg.host,
-    port: cfg.port,
-    user: cfg.user,
-    password: cfg.password,
-    database: cfg.database,
-    charset: 'utf8mb4',
-  })
-  try {
-    return await fn(conn)
-  } finally {
-    await conn.end()
-  }
-}
-
-async function pullLive(cfg: Required<Pick<Nl2sqlConfig, 'host' | 'port' | 'user' | 'password' | 'database'>>, table: string, sampleLimit: number) {
-  const ident = table.replace(/`/g, '')
-  return withMysql(cfg, async (conn) => {
-    const [cols] = await conn.query(
-      `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLUMN_COMMENT AS comment
-       FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
-       ORDER BY ORDINAL_POSITION`,
-      [ident],
-    )
-    const live = (cols as LiveColumn[]).map((c) => ({
-      name: String(c.name),
-      type: String(c.type),
-      comment: String(c.comment || ''),
-    }))
-    if (!live.length) throw new Error(`MySQL 中没有表 ${ident}，检查 database 配置`)
-    const [rows] = await conn.query('SELECT * FROM `' + ident + '` LIMIT ?', [sampleLimit])
-    const sample = (rows as Record<string, unknown>[]).map((row) => {
-      const next: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(row)) next[k] = formatCell(v)
-      return next
-    })
-    return { live, sample }
-  })
 }
 
 function validateSelect(sql: string, allowed: Set<string>, queryLimit: number): string {
@@ -180,7 +77,7 @@ function validateSelect(sql: string, allowed: Set<string>, queryLimit: number): 
     [...compact.matchAll(/\b(?:from|join)\s+`?([a-zA-Z0-9_]+)`?/gi)].map((m) => m[1].toLowerCase()),
   )
   for (const name of found) {
-    if (!allowed.has(name)) throw new Error(`表 ${name} 未登记，先调 db_register_table 或先看业务域目录`)
+    if (!allowed.has(name)) throw new Error(`表 ${name} 未登记，请先在配置页勾选注册`)
   }
   if (!/\blimit\s+\d+/i.test(compact)) return `${compact} LIMIT ${queryLimit}`
   return compact
@@ -191,10 +88,10 @@ function renderSchema(item: TableSchema): string {
     `DOMAIN ${item.domain}`,
     `TABLE \`${item.table}\`  source=${item.source || 'mysql'}`,
     item.description || '',
+    'COLUMNS:',
   ]
   const comments = item.columns || {}
   const live = item.live_columns || []
-  lines.push('COLUMNS:')
   if (live.length) {
     for (const col of live) {
       const hint = comments[col.name] || col.comment || ''
@@ -210,132 +107,104 @@ function renderSchema(item: TableSchema): string {
   return lines.filter(Boolean).join('\n')
 }
 
+function send(res: ServerResponse, code: number, body: unknown, type = 'application/json; charset=utf-8') {
+  const text = typeof body === 'string' ? body : JSON.stringify(body)
+  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' })
+  res.end(text)
+}
+
+async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 export function apply(ctx: Context, config: Nl2sqlConfig = {}) {
-  const cfg = {
-    host: config.host || process.env.MYSQL_HOST || '127.0.0.1',
-    port: Number(config.port || process.env.MYSQL_PORT || 3306),
-    user: config.user || process.env.MYSQL_USER || 'root',
-    password: config.password ?? process.env.MYSQL_PASSWORD ?? '',
-    database: config.database || process.env.MYSQL_DATABASE || '',
+  const state = {
+    mysql: {
+      host: config.host || process.env.MYSQL_HOST || '127.0.0.1',
+      port: Number(config.port || process.env.MYSQL_PORT || 3306),
+      user: config.user || process.env.MYSQL_USER || 'root',
+      password: config.password ?? process.env.MYSQL_PASSWORD ?? '',
+      database: config.database || process.env.MYSQL_DATABASE || '',
+    } as MysqlConfig,
     schemaDir: resolveDir(config.schemaDir || './extras/dsh-nl2sql/schemas'),
-    sampleLimit: Number(config.sampleLimit ?? 5),
+    sampleLimit: Number(config.sampleLimit ?? 10),
     queryLimit: Number(config.queryLimit ?? 50),
+    adminPort: Number(config.adminPort ?? 3081),
   }
+
+  void readRuntime().then((saved) => {
+    state.mysql = mergeMysql(state.mysql, saved)
+  })
 
   ctx.tools.register(defineTool({
     name: 'db_list_domains',
-    description: 'List distribution-network business domains and how many tables each domain contains. Domains include 设备/运行/检修/抢修/停电.',
+    description: 'List business domains for distribution-network NL2SQL.',
     parameters: {},
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute() {
-      const packs = await loadPacks(cfg.schemaDir)
-      if (!packs.length) return '还没有业务域。先看 schemas/设备.json 或调 db_register_table。'
-      return packs.map((p) => `- 域 ${p.domain}  tables=${p.tables.length}  ${p.description}`).join('\n')
+      const packs = await loadPacks(state.schemaDir)
+      if (!packs.length) return '还没有业务域。请打开 http://127.0.0.1:3081 配置。'
+      return packs.map((p) => `- 域 ${p.domain}  tables=${p.tables.length}  ${p.keywords || ''}  ${p.description}`).join('\n')
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'db_register_table',
-    description:
-      'Register a real MySQL table into a business domain (设备/运行/检修/抢修/停电). Pulls live columns and sample rows, then writes into that domain JSON pack — not one file per table.',
+    description: 'Register one real MySQL table into a domain. Prefer the settings admin page for batch register.',
     parameters: {
-      table: { type: 'string', required: true, description: 'Exact MySQL table name' },
-      domain: { type: 'string', description: 'Business domain. Default 设备. Use 运行/检修/抢修/停电 when appropriate.' },
-      description: { type: 'string', description: 'What this table means' },
-      columns_json: {
-        type: 'string',
-        description: 'Optional JSON object of column comments',
-      },
+      table: { type: 'string', required: true, description: 'MySQL table name' },
+      domain: { type: 'string', description: '设备/运行/检修/抢修/停电' },
+      description: { type: 'string', description: 'Table meaning' },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
-      const table = args.table.trim()
-      const domain = normalizeDomain(args.domain)
-      let columns: Record<string, string> = {}
-      if (args.columns_json) {
-        const parsed = JSON.parse(args.columns_json) as Record<string, string>
-        if (!parsed || typeof parsed !== 'object') throw new Error('columns_json must be a JSON object')
-        columns = parsed
-      }
-      const all = await loadAll(cfg.schemaDir)
-      const existing = all.find((t) => t.table.toLowerCase() === table.toLowerCase() && t.domain === domain)
-        || all.find((t) => t.table.toLowerCase() === table.toLowerCase())
-      const { live, sample } = await pullLive(cfg, table, cfg.sampleLimit)
+      const domain = (args.domain || '设备').trim()
+      const { live, sample } = await pullLive(state.mysql, args.table.trim(), state.sampleLimit)
       const data: TableSchema = {
-        table,
+        table: args.table.trim(),
         domain,
         source: 'mysql',
-        description: args.description || existing?.description || '',
-        columns: { ...(existing?.columns || {}), ...columns },
+        description: args.description || '',
+        columns: {},
         live_columns: live,
         sample_rows: sample,
         refreshed_at: new Date().toISOString(),
       }
-      await saveTable(cfg.schemaDir, data)
+      await saveTable(state.schemaDir, data)
       return renderSchema(data)
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'db_list_tables',
-    description: 'List registered tables grouped by business domain. Pass domain to only see 设备 or another domain.',
-    parameters: {
-      domain: { type: 'string', description: 'Optional domain filter: 设备/运行/检修/抢修/停电' },
-    },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    description: 'List registered tables grouped by domain.',
+    parameters: { domain: { type: 'string', description: 'Optional domain filter' } },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
-      const all = await loadAll(cfg.schemaDir)
-      const domain = args.domain?.trim()
-      const picked = domain ? all.filter((t) => t.domain === domain) : all
-      if (!picked.length) return domain ? `域 ${domain} 下还没有表` : '还没有登记表'
-      const groups = new Map<string, TableSchema[]>()
-      for (const item of picked) {
-        const list = groups.get(item.domain) || []
-        list.push(item)
-        groups.set(item.domain, list)
-      }
-      const blocks: string[] = []
-      for (const [name, list] of groups) {
-        blocks.push(`## 域 ${name}`)
-        for (const item of list) {
-          blocks.push(`- ${item.table}  ${item.source || 'mysql'}  ${item.description}`)
-        }
-      }
-      return blocks.join('\n')
+      const all = await loadAll(state.schemaDir)
+      const picked = args.domain?.trim() ? all.filter((t) => t.domain === args.domain.trim()) : all
+      if (!picked.length) return '还没有登记表。请到 http://127.0.0.1:3081 勾选注册。'
+      return picked.map((t) => `- [${t.domain}] ${t.table}  ${t.source || 'mysql'}  ${t.description}`).join('\n')
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'db_schema',
-    description:
-      'Get schemas and sample rows. Prefer passing domain=设备 for equipment questions so the model sees the whole equipment pack, not one table file.',
+    description: 'Get schema plus up to 10 sample rows. Pass domain=设备 or a table name.',
     parameters: {
-      domain: { type: 'string', description: 'Business domain, e.g. 设备' },
-      table: { type: 'string', description: 'Optional single table name' },
+      domain: { type: 'string', description: 'Domain name' },
+      table: { type: 'string', description: 'Single table' },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
-      const all = await loadAll(cfg.schemaDir)
-      if (!all.length) return '还没有登记表'
-      let picked = all
+      let picked = await loadAll(state.schemaDir)
       if (args.domain?.trim()) picked = picked.filter((t) => t.domain === args.domain.trim())
       if (args.table?.trim()) picked = picked.filter((t) => t.table.toLowerCase() === args.table.trim().toLowerCase())
-      if (!picked.length) return '没有匹配的表。先 db_list_domains / db_list_tables。'
+      if (!picked.length) return '没有匹配的表'
       if (picked.length > 8 && !args.table) {
-        const summary = picked.map((t) => `- ${t.domain}.${t.table}  ${t.description}`).join('\n')
-        return `该范围有 ${picked.length} 张表，先看目录，再 db_schema 指定 table。\n${summary}`
+        return `共 ${picked.length} 张表，先看目录再指定 table：\n` + picked.map((t) => `- ${t.domain}.${t.table}  ${t.description}`).join('\n')
       }
       return picked.map(renderSchema).join('\n\n')
     },
@@ -343,43 +212,125 @@ export function apply(ctx: Context, config: Nl2sqlConfig = {}) {
 
   ctx.tools.register(defineTool({
     name: 'db_query',
-    description:
-      'Run one read-only MySQL SELECT. Table must be registered in some domain. Mock equipment tables are schema-only until the same name exists in MySQL or you register the real table.',
-    parameters: {
-      sql: { type: 'string', required: true, description: 'A single SELECT statement' },
-    },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    description: 'Run one read-only SELECT against registered domain tables.',
+    parameters: { sql: { type: 'string', required: true, description: 'SELECT' } },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
-      const all = await loadAll(cfg.schemaDir)
+      const all = await loadAll(state.schemaDir)
       const allowed = new Set(all.map((x) => x.table.toLowerCase()))
-      const sql = validateSelect(args.sql, allowed, cfg.queryLimit)
-      const used = [...sql.matchAll(/\b(?:from|join)\s+`?([a-zA-Z0-9_]+)`?/gi)].map((m) => m[1].toLowerCase())
-      const mockOnly = used.filter((name) => all.find((t) => t.table.toLowerCase() === name)?.source === 'mock')
-      try {
-        const rows = await withMysql(cfg, async (conn) => {
-          const [result] = await conn.query(sql)
-          return (result as Record<string, unknown>[]).map((row) => {
-            const next: Record<string, unknown> = {}
-            for (const [k, v] of Object.entries(row)) next[k] = formatCell(v)
-            return next
-          })
+      const sql = validateSelect(args.sql, allowed, state.queryLimit)
+      const rows = await withMysql(state.mysql, async (conn) => {
+        const [result] = await conn.query(sql)
+        return (result as Record<string, unknown>[]).map((row) => {
+          const next: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(row)) next[k] = formatCell(v)
+          return next
         })
-        return [`SQL: ${sql}`, `rows: ${rows.length}`, JSON.stringify(rows, null, 2)].join('\n')
-      } catch (err) {
-        if (mockOnly.length) {
-          const samples = all.filter((t) => mockOnly.includes(t.table.toLowerCase()))
-          return [
-            `真库查询失败（${String(err)} ）`,
-            `以下表目前只是设备域模拟说明: ${mockOnly.join(', ')}`,
-            '若要查真实数据，用 db_register_table 把库里同名真表登记进对应域。',
-            ...samples.map((t) => `MOCK ${t.table}:\n${JSON.stringify(t.sample_rows, null, 2)}`),
-          ].join('\n\n')
-        }
-        throw err
-      }
+      })
+      return [`SQL: ${sql}`, `rows: ${rows.length}`, JSON.stringify(rows, null, 2)].join('\n')
     },
   }))
+
+  const adminHtmlPromise = readFile(path.join(HERE, 'admin.html'), 'utf8')
+
+  const server = createServer((req, res) => {
+    void handleAdmin(req, res).catch((err) => {
+      if (!res.headersSent) send(res, 500, { error: String(err instanceof Error ? err.message : err) })
+    })
+  })
+
+  async function handleAdmin(req: IncomingMessage, res: ServerResponse) {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    const p = url.pathname
+    if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
+      send(res, 200, await adminHtmlPromise, 'text/html; charset=utf-8')
+      return
+    }
+    if (req.method === 'GET' && p === '/api/config') {
+      send(res, 200, { ...state.mysql, password: state.mysql.password ? '********' : '' })
+      return
+    }
+    if (req.method === 'POST' && p === '/api/config') {
+      const body = JSON.parse(await readBody(req) || '{}') as Partial<MysqlConfig>
+      state.mysql = mergeMysql(state.mysql, body)
+      await writeRuntime(state.mysql)
+      try {
+        const tables = await listMysqlTables(state.mysql)
+        send(res, 200, { ok: true, message: `连接成功，库中有 ${tables.length} 张表` })
+      } catch (err) {
+        send(res, 200, { ok: false, message: `已保存，但测试失败: ${String(err instanceof Error ? err.message : err)}` })
+      }
+      return
+    }
+    if (req.method === 'GET' && p === '/api/tables') {
+      send(res, 200, { tables: await listMysqlTables(state.mysql) })
+      return
+    }
+    if (req.method === 'GET' && p === '/api/domains') {
+      const packs = await loadPacks(state.schemaDir)
+      send(res, 200, {
+        items: packs.map((p) => ({
+          domain: p.domain,
+          description: p.description,
+          keywords: p.keywords || '',
+          tables: p.tables.length,
+        })),
+      })
+      return
+    }
+    if (req.method === 'POST' && p === '/api/domains') {
+      const body = JSON.parse(await readBody(req) || '{}') as { domain?: string, description?: string, keywords?: string }
+      const domain = (body.domain || '').trim()
+      if (!domain) throw new Error('域名称不能为空')
+      const packs = await loadPacks(state.schemaDir)
+      const old = packs.find((p) => p.domain === domain)
+      await savePack(state.schemaDir, {
+        domain,
+        description: body.description || old?.description || `${domain}业务域`,
+        keywords: body.keywords || old?.keywords || '',
+        tables: old?.tables || [],
+      })
+      send(res, 200, { ok: true })
+      return
+    }
+    if (req.method === 'POST' && p === '/api/register') {
+      const body = JSON.parse(await readBody(req) || '{}') as { domain?: string, tables?: string[], sampleLimit?: number }
+      const domain = (body.domain || '').trim()
+      const tables = body.tables || []
+      if (!domain) throw new Error('先选业务域')
+      if (!tables.length) throw new Error('先勾选要注册的表')
+      const limit = Number(body.sampleLimit || state.sampleLimit || 10)
+      const done: string[] = []
+      const failed: string[] = []
+      for (const table of tables) {
+        try {
+          const { live, sample } = await pullLive(state.mysql, table, limit)
+          await saveTable(state.schemaDir, {
+            table,
+            domain,
+            source: 'mysql',
+            description: '',
+            columns: Object.fromEntries(live.map((c) => [c.name, c.comment || ''])),
+            live_columns: live,
+            sample_rows: sample,
+            refreshed_at: new Date().toISOString(),
+          })
+          done.push(table)
+        } catch (err) {
+          failed.push(`${table}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      send(res, 200, { ok: failed.length === 0, message: `成功 ${done.length} 张` + (failed.length ? `，失败:\n${failed.join('\n')}` : '') })
+      return
+    }
+    send(res, 404, { error: 'not found' })
+  }
+
+  server.listen(state.adminPort, '127.0.0.1', () => {
+    ctx.logger?.info?.(`[nl2sql] settings admin http://127.0.0.1:${state.adminPort}`)
+    console.log(`[nl2sql] 配置页 http://127.0.0.1:${state.adminPort}`)
+  })
+  ctx.effect(() => () => {
+    server.close()
+  })
 }
