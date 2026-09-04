@@ -1,0 +1,10 @@
+{
+  "table": "t_psr_ds_feeder",
+  "description": "配网馈线台账。按供电单位、线路名称查询。",
+  "columns": {
+    "psr_id": "设备ID",
+    "name": "线路名称，如10kV苏利线121",
+    "city": "地市编码",
+    "maint_org": "运维单位编码"
+  }
+}
