@@ -1,12 +1,12 @@
 # Load from repo root:
 #   pnpm dsh web --patch ./extras/dsh-nl2sql/cordis.yml
 #
-# `name` MUST be an absolute path. Relative paths are resolved against this
-# yaml file and become extras/dsh-nl2sql/extras/dsh-nl2sql/src/index.ts.
+# On Windows, `name` cannot be E:/... (Node treats E: as a URL scheme).
+# Relative names are resolved from THIS yaml file's directory.
 
 - insert:
     - id: nl2sql-mysql
-      name: E:/project/deepseek-harness/extras/dsh-nl2sql/src/index.ts
+      name: ./src/index.ts
       config:
         host: 127.0.0.1
         port: 3306
