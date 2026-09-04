@@ -1,0 +1,10 @@
+{
+  "name": "dsh-nl2sql",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness tools: register MySQL table schemas and run read-only NL2SQL",
+  "dependencies": {
+    "mysql2": "^3.11.0"
+  }
+}
