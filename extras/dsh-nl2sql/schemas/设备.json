@@ -1,0 +1,232 @@
+{
+  "domain": "设备",
+  "description": "配网设备台账与拓扑关系。模拟目录，供对话框认域、认表；真实查询需要库中有同名表或 db_register_table 登记真表。",
+  "tables": [
+    {
+      "table": "ds_feeder",
+      "domain": "设备",
+      "source": "mock",
+      "description": "10kV馈线台账",
+      "columns": {
+        "psr_id": "设备ID",
+        "name": "线路名称，如10kV下坝线（143）",
+        "volt_code": "电压等级",
+        "city": "地市",
+        "maint_org": "运维单位",
+        "substation": "上级变电站",
+        "run_status": "运行状态"
+      },
+      "live_columns": [],
+      "sample_rows": [
+        {"psr_id": "FD-0143", "name": "10kV下坝线（143）", "volt_code": "10kV", "city": "无锡", "maint_org": "宜兴配电", "substation": "下坝变", "run_status": "运行"},
+        {"psr_id": "FD-0121", "name": "10kV苏利线121", "volt_code": "10kV", "city": "无锡", "maint_org": "宜兴配电", "substation": "宜城变", "run_status": "运行"}
+      ]
+    },
+    {
+      "table": "ds_line_section",
+      "domain": "设备",
+      "source": "mock",
+      "description": "线路段（柳-柳/柳-站）",
+      "columns": {
+        "psr_id": "线段ID",
+        "feeder_id": "所属馈线ID",
+        "name": "线段名称",
+        "length_km": "长度公里",
+        "wire_type": "导线型号"
+      },
+      "live_columns": [],
+      "sample_rows": [
+        {"psr_id": "SEC-143-01", "feeder_id": "FD-0143", "name": "下坝线#1-#18", "length_km": 1.26, "wire_type": "JKLYJ-10-120"}
+      ]
+    },
+    {
+      "table": "ds_pole",
+      "domain": "设备",
+      "source": "mock",
+      "description": "杆塔",
+      "columns": {
+        "psr_id": "杆塔ID",
+        "feeder_id": "所属馈线",
+        "pole_no": "杆号",
+        "material": "杆材",
+        "height_m": "杆高"
+      },
+      "live_columns": [],
+      "sample_rows": [
+        {"psr_id": "PL-143-018", "feeder_id": "FD-0143", "pole_no": "18", "material": "混凝土", "height_m": 12}
+      ]
+    },
+    {
+      "table": "ds_transformer",
+      "domain": "设备",
+      "source": "mock",
+      "description": "配电变压器",
+      "columns": {
+        "psr_id": "配变ID",
+        "name": "配变名称",
+        "feeder_id": "所属馈线",
+        "capacity_kva": "容量",
+        "public_flag": "公变/专变"
+      },
+      "live_columns": [],
+      "sample_rows": [
+        {"psr_id": "TR-143-03", "name": "下坝3#变", "feeder_id": "FD-0143", "capacity_kva": 400, "public_flag": "公变"}
+      ]
+    },
+    {
+      "table": "ds_switch",
+      "domain": "设备",
+      "source": "mock",
+      "description": "线路开关（柳上/环网）",
+      "columns": {
+        "psr_id": "开关ID",
+        "name": "开关名称",
+        "feeder_id": "所属馈线",
+        "switch_type": "断路器/负荷开关/刀闸",
+        "normal_state": "常态分/合"
+      },
+      "live_columns": [],
+      "sample_rows": [
+        {"psr_id": "SW-143-K1", "name": "下坝线K1", "feeder_id": "FD-0143", "switch_type": "负荷开关", "normal_state": "合"}
+      ]
+    },
+    {
+      "table": "ds_breaker",
+      "domain": "设备",
+      "source": "mock",
+      "description": "断路器",
+      "columns": {"psr_id": "断路器ID", "name": "名称", "feeder_id": "馈线", "rated_current": "额定电流"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "BR-143-01", "name": "下坝出线断路器", "feeder_id": "FD-0143", "rated_current": 630}]
+    },
+    {
+      "table": "ds_disconnector",
+      "domain": "设备",
+      "source": "mock",
+      "description": "隔离开关/刀闸",
+      "columns": {"psr_id": "刀闸ID", "name": "名称", "feeder_id": "馈线"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "DS-143-02", "name": "下坝#12刀闸", "feeder_id": "FD-0143"}]
+    },
+    {
+      "table": "ds_rmu",
+      "domain": "设备",
+      "source": "mock",
+      "description": "环网柜",
+      "columns": {"psr_id": "环网柜ID", "name": "名称", "feeder_id": "主供馈线", "bay_count": "间隙数"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "RMU-143-01", "name": "下坝环网一", "feeder_id": "FD-0143", "bay_count": 6}]
+    },
+    {
+      "table": "ds_box_substation",
+      "domain": "设备",
+      "source": "mock",
+      "description": "箱式变电站",
+      "columns": {"psr_id": "箱变ID", "name": "名称", "feeder_id": "馈线", "capacity_kva": "容量"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "BX-143-01", "name": "下坝箱变1#", "feeder_id": "FD-0143", "capacity_kva": 630}]
+    },
+    {
+      "table": "ds_switch_station",
+      "domain": "设备",
+      "source": "mock",
+      "description": "开关站",
+      "columns": {"psr_id": "站房ID", "name": "名称", "city": "地市"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "ST-XB-01", "name": "下坝开关站", "city": "无锡"}]
+    },
+    {
+      "table": "ds_cable",
+      "domain": "设备",
+      "source": "mock",
+      "description": "电缆段",
+      "columns": {"psr_id": "电缆段ID", "feeder_id": "馈线", "length_km": "长度", "section": "截面"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "CB-143-01", "feeder_id": "FD-0143", "length_km": 0.42, "section": "YJV22-8.7/15-3*240"}]
+    },
+    {
+      "table": "ds_conductor",
+      "domain": "设备",
+      "source": "mock",
+      "description": "架空导线段",
+      "columns": {"psr_id": "导线段ID", "feeder_id": "馈线", "wire_type": "型号"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "WD-143-01", "feeder_id": "FD-0143", "wire_type": "JKLYJ-10-150"}]
+    },
+    {
+      "table": "ds_busbar",
+      "domain": "设备",
+      "source": "mock",
+      "description": "配电母线",
+      "columns": {"psr_id": "母线ID", "station_id": "所属站房", "volt_code": "电压"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "BUS-XB-10", "station_id": "ST-XB-01", "volt_code": "10kV"}]
+    },
+    {
+      "table": "ds_fuse",
+      "domain": "设备",
+      "source": "mock",
+      "description": "落上式熔断器",
+      "columns": {"psr_id": "熔断器ID", "feeder_id": "馈线", "transformer_id": "保护配变"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "FU-143-03", "feeder_id": "FD-0143", "transformer_id": "TR-143-03"}]
+    },
+    {
+      "table": "ds_capacitor",
+      "domain": "设备",
+      "source": "mock",
+      "description": "无功补偿电容器",
+      "columns": {"psr_id": "电容ID", "feeder_id": "馈线", "capacity_kvar": "容量"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "CAP-143-01", "feeder_id": "FD-0143", "capacity_kvar": 100}]
+    },
+    {
+      "table": "ds_arrestor",
+      "domain": "设备",
+      "source": "mock",
+      "description": "避雷器",
+      "columns": {"psr_id": "避雷器ID", "feeder_id": "馈线", "pole_id": "装设杆塔"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "AR-143-18", "feeder_id": "FD-0143", "pole_id": "PL-143-018"}]
+    },
+    {
+      "table": "ds_ct",
+      "domain": "设备",
+      "source": "mock",
+      "description": "电流互感器",
+      "columns": {"psr_id": "CT_ID", "feeder_id": "馈线", "ratio": "变比"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "CT-143-01", "feeder_id": "FD-0143", "ratio": "600/5"}]
+    },
+    {
+      "table": "ds_pt",
+      "domain": "设备",
+      "source": "mock",
+      "description": "电压互感器",
+      "columns": {"psr_id": "PT_ID", "station_id": "站房", "ratio": "变比"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "PT-XB-01", "station_id": "ST-XB-01", "ratio": "10/0.1"}]
+    },
+    {
+      "table": "ds_customer_point",
+      "domain": "设备",
+      "source": "mock",
+      "description": "用户接入点",
+      "columns": {"psr_id": "接入点ID", "feeder_id": "馈线", "customer_name": "用户名称"},
+      "live_columns": [],
+      "sample_rows": [{"psr_id": "CU-143-09", "feeder_id": "FD-0143", "customer_name": "下坝小区变"}]
+    },
+    {
+      "table": "ds_equip_rel",
+      "domain": "设备",
+      "source": "mock",
+      "description": "设备拓扑关系（父子/所属馈线）",
+      "columns": {"parent_id": "父设备", "child_id": "子设备", "rel_type": "关系类型"},
+      "live_columns": [],
+      "sample_rows": [
+        {"parent_id": "FD-0143", "child_id": "TR-143-03", "rel_type": "馈线-配变"},
+        {"parent_id": "FD-0143", "child_id": "SW-143-K1", "rel_type": "馈线-开关"}
+      ]
+    }
+  ]
+}
